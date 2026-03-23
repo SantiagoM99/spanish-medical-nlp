@@ -1,0 +1,58 @@
+# Data and results
+data/
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Model weights and large binaries
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.ckpt
+*.h5
+
+# Experiment tracking
+wandb/
+mlruns/
+.neptune/
+runs/
+lightning_logs/
+
+# Jupyter
+notebooks/.ipynb_checkpoints/
+.ipynb_checkpoints/
+
+# Logs and caches
+*.log
+*.cache
+.cache/
+huggingface/
+.huggingface/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
