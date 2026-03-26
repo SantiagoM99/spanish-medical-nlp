@@ -1,0 +1,66 @@
+# ner_config.yaml
+# Configuración detallada para benchmarks NER (AnatEM Spanish)
+
+data:
+  data_dir: data/anat_em
+  knn_index_dir: data/anat_em/knn_index
+
+encoder_models:
+  - dccuchile/bert-base-spanish-wwm-cased
+  - PlanTL-GOB-ES/roberta-base-biomedical-es
+  - PlanTL-GOB-ES/roberta-large-biomedical-es
+  - xlm-roberta-base
+  - bert-base-multilingual-cased
+
+decoder_models:
+  - name: Qwen2.5-0.5B-Instruct
+    hf_id: Qwen/Qwen2.5-0.5B-Instruct
+    load_in_4bit: false
+  - name: Qwen2.5-7B-Instruct
+    hf_id: Qwen/Qwen2.5-7B-Instruct
+    load_in_4bit: true
+  - name: Llama-3.1-8B-Instruct
+    hf_id: meta-llama/Llama-3.1-8B-Instruct
+    load_in_4bit: true
+
+encoder_training:
+  num_epochs: 5
+  batch_size: 16
+  learning_rate: 3.0e-5
+  max_length: 256
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  fp16: true
+  save_strategy: epoch
+  evaluation_strategy: epoch
+  load_best_model_at_end: true
+
+peft_training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  max_length: 256
+  warmup_ratio: 0.05
+  fp16: true
+  lora:
+    r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+
+decoder_inference:
+  prompt_strategies:
+    - zero_shot
+    - few_shot
+    - knn_few_shot
+  knn_k: 5
+  self_verification: true
+  batch_size: 4
+
+output:
+  base_dir: results/ner
+
+wandb:
+  project: spanish-ner-benchmark
+  enabled: true

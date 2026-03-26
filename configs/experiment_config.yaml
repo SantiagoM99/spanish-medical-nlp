@@ -1,0 +1,32 @@
+# experiment_config.yaml
+# Configuración para ExperimentRunner (grid search multilabel)
+
+data:
+  data_dir: data/pubmed_mesh
+  text_modes:
+    - title_abstract
+    - abstract_only
+    - title_only
+  filter_geographicals_options:
+    - false
+    - true
+
+models:
+  - dccuchile/bert-base-spanish-wwm-cased
+  - PlanTL-GOB-ES/roberta-base-biomedical-es
+  - PlanTL-GOB-ES/roberta-large-biomedical-es
+  - xlm-roberta-base
+
+training:
+  num_epochs: 3
+  batch_size: 8
+  learning_rate: 2.0e-5
+  max_length: 512
+  threshold: 0.5
+
+output:
+  base_dir: results/multilabel
+
+wandb:
+  project: spanish-multilabel-benchmark
+  enabled: true
