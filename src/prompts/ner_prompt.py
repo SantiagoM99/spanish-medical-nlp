@@ -1,149 +1,191 @@
 """
 ner_prompt.py
 
-Prompt template for zero-shot NER with decoder LLMs on the AnatEM Spanish dataset.
+Prompt templates para NER en textos médicos en español (AnatEM).
 
-The prompt asks the model to identify anatomical entities and return them
-as a JSON list of {"entity": ..., "type": ...} objects.
-The response is then parsed and aligned back to the input tokens.
+Estrategias disponibles:
+  zero_shot          — Sin ejemplos
+  few_shot           — Ejemplos fijos hardcodeados
+  knn_few_shot       — Ejemplos dinámicos recuperados por k-NN (requiere KNNRetriever)
+
+Self-verification:
+  build_verification_prompt() — Verifica cada entidad extraída con una segunda llamada al LLM.
+  +2-5% F1 según GPT-NER paper.
 """
 
 import json
 import re
-from typing import List
+from typing import Dict, List, Optional
 
 from prompts.base_prompt import BasePromptTemplate
 
 
 class NERPromptTemplate(BasePromptTemplate):
     """
-    Prompt for anatomical NER in Spanish medical text.
+    Prompt para NER anatómico en español.
 
-    Entity types from AnatEM:
-      - Anatomical_entity (covering all sub-types for zero-shot)
-      OR granular types: Organism_subdivision, Anatomical_system,
-        Organ, Multi-tissue_structure, Tissue, Cell, Cellular_component,
-        Developing_anatomical_structure, Organism_substance, Immaterial_anatomical_entity,
-        Pathological_formation, Cancer
+    Soporta zero-shot, few-shot fijo y k-NN few-shot.
     """
 
-    ZERO_SHOT_ES = """\
-Eres un sistema de reconocimiento de entidades de anatomía médica.
+    _ZERO_SHOT = """\
+Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
 
-Tipos de entidades anatómicas a identificar: {entity_types}
+Tipos de entidades válidos: {entity_types}
 
-Dado el siguiente texto médico en español, identifica todas las entidades anatómicas.
-Responde con una lista JSON de objetos con los campos "entidad" y "tipo".
-Si no hay entidades, responde con [].
+Extrae TODAS las entidades del texto. Responde SOLO con un array JSON:
+[{{"entity": "texto_exacto", "type": "tipo"}}]
+Si no hay entidades, responde: []
 
-Texto: {sentence}
+Texto: "{sentence}"
 
-Entidades (JSON):"""
+JSON:"""
 
-    ZERO_SHOT_EN = """\
-You are a medical anatomy named entity recognition system.
+    _FEW_SHOT = """\
+Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
 
-Anatomical entity types to identify: {entity_types}
+Tipos de entidades válidos: {entity_types}
 
-Given the following Spanish medical text, identify all anatomical entities.
-Respond with a JSON list of objects with fields "entity" and "type".
-If there are no entities, respond with [].
+EJEMPLOS:
 
-Text: {sentence}
-
-Entities (JSON):"""
-
-    FEW_SHOT_ES = """\
-Eres un sistema de reconocimiento de entidades de anatomía médica.
-
-Tipos de entidades: {entity_types}
-
-Ejemplos:
 Texto: "Se observó una lesión en el ventrículo izquierdo y el miocardio."
-Entidades: [{{"entidad": "ventrículo izquierdo", "tipo": "Organ"}}, {{"entidad": "miocardio", "tipo": "Tissue"}}]
+JSON: [{{"entity": "ventrículo izquierdo", "type": "Organ"}}, {{"entity": "miocardio", "type": "Tissue"}}]
 
 Texto: "El paciente presentó metástasis en el hígado y el pulmón derecho."
-Entidades: [{{"entidad": "hígado", "tipo": "Organ"}}, {{"entidad": "pulmón derecho", "tipo": "Organ"}}]
+JSON: [{{"entity": "hígado", "type": "Organ"}}, {{"entity": "pulmón derecho", "type": "Organ"}}]
+
+Texto: "Se detectó actividad en la corteza cerebral y células T."
+JSON: [{{"entity": "corteza cerebral", "type": "Multi-tissue_structure"}}, {{"entity": "células T", "type": "Cell"}}]
 
 Ahora analiza:
-Texto: {sentence}
-Entidades (JSON):"""
+Texto: "{sentence}"
+JSON:"""
+
+    _KNN_FEW_SHOT = """\
+Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
+
+Tipos de entidades válidos: {entity_types}
+
+EJEMPLOS DE ENTRENAMIENTO (ordenados por similitud con el texto):
+{examples_block}
+
+TEXTO A ANALIZAR:
+Texto: "{sentence}"
+JSON:"""
+
+    _VERIFICATION = """\
+Eres un verificador experto de entidades biomédicas en español.
+
+Tipos válidos: {entity_types}
+
+Verifica si la entidad extraída es correcta en el contexto del texto.
+
+Texto: "{sentence}"
+Entidad extraída: "{entity}" (tipo: {entity_type})
+
+¿Es "{entity}" realmente una entidad de tipo {entity_type} en este texto?
+Responde SOLO: SÍ o NO
+
+Respuesta:"""
 
     def __init__(
         self,
         entity_types: List[str],
         language: str = "es",
-        few_shot: bool = False,
+        strategy: str = "zero_shot",
     ):
         super().__init__(language=language)
-        # Extract unique type names from BIO labels
         self.raw_entity_types = entity_types
+        self.strategy = strategy
+
+        # Nombres limpios sin prefijos BIO
         type_names = sorted(set(
             et.replace("B-", "").replace("I-", "")
             for et in entity_types
             if et != "O"
         ))
         self.entity_types_str = ", ".join(type_names)
-        self.few_shot = few_shot
+        self.type_names = type_names
 
-    def create_prompt(self, tokens: List[str], **kwargs) -> str:
+    def create_prompt(
+        self,
+        tokens: List[str],
+        knn_examples: Optional[List[Dict]] = None,
+        **kwargs,
+    ) -> str:
         """
-        Create a NER prompt for a tokenized sentence.
+        Crea el prompt NER para una oración tokenizada.
 
         Args:
-            tokens: List of token strings.
+            tokens: Lista de tokens de la oración.
+            knn_examples: Ejemplos recuperados por k-NN (solo para strategy='knn_few_shot').
 
         Returns:
-            Formatted prompt string.
+            Prompt formateado.
         """
         sentence = " ".join(tokens)
 
-        if self.few_shot and self.language == "es":
-            template = self.FEW_SHOT_ES
-        elif self.language == "es":
-            template = self.ZERO_SHOT_ES
+        if self.strategy == "knn_few_shot" and knn_examples:
+            examples_block = self._format_knn_examples(knn_examples)
+            return self._KNN_FEW_SHOT.format(
+                entity_types=self.entity_types_str,
+                examples_block=examples_block,
+                sentence=sentence,
+            )
+        elif self.strategy == "few_shot":
+            return self._FEW_SHOT.format(
+                entity_types=self.entity_types_str,
+                sentence=sentence,
+            )
         else:
-            template = self.ZERO_SHOT_EN
+            return self._ZERO_SHOT.format(
+                entity_types=self.entity_types_str,
+                sentence=sentence,
+            )
 
-        return template.format(
+    def build_verification_prompt(
+        self, sentence: str, entity: str, entity_type: str
+    ) -> str:
+        """
+        Construye un prompt de auto-verificación para una entidad.
+
+        Args:
+            sentence: Oración original.
+            entity: Texto de la entidad a verificar.
+            entity_type: Tipo predicho.
+
+        Returns:
+            Prompt de verificación.
+        """
+        return self._VERIFICATION.format(
             entity_types=self.entity_types_str,
             sentence=sentence,
+            entity=entity,
+            entity_type=entity_type,
         )
 
     def parse_response(self, response: str, tokens: List[str]) -> List[str]:
         """
-        Parse LLM response and align entities to BIO labels for input tokens.
-
-        Strategy:
-          1. Extract JSON from response.
-          2. For each entity span, find matching tokens and assign BIO labels.
-          3. Return label list aligned to input tokens.
+        Parsea la respuesta del LLM y la alinea como BIO labels a los tokens.
 
         Args:
-            response: Raw LLM output.
-            tokens: Original input tokens.
+            response: Respuesta cruda del modelo.
+            tokens: Tokens originales de la oración.
 
         Returns:
-            BIO label list aligned to tokens.
+            Lista de BIO labels alineada con tokens.
         """
         labels = ["O"] * len(tokens)
-        sentence = " ".join(tokens).lower()
-
-        # Extract JSON array from response
         entities = self._extract_json(response)
         if not entities:
             return labels
 
         for item in entities:
-            entity_text = str(item.get("entidad", item.get("entity", ""))).lower().strip()
-            entity_type = str(item.get("tipo", item.get("type", "Anatomical_entity"))).strip()
-
+            entity_text = str(item.get("entity", "")).lower().strip()
+            entity_type = str(item.get("type", "Anatomical_entity")).strip()
             if not entity_text:
                 continue
 
-            # Find entity span in token sequence
-            entity_tokens = entity_text.split()
-            matched = self._find_token_span(tokens, entity_tokens)
+            matched = self._find_token_span(tokens, entity_text.split())
             if matched is not None:
                 start, end = matched
                 labels[start] = f"B-{entity_type}"
@@ -152,28 +194,46 @@ Entidades (JSON):"""
 
         return labels
 
+    # ------------------------------------------------------------------
+    # Helpers privados
+    # ------------------------------------------------------------------
+
+    def _format_knn_examples(self, examples: List[Dict]) -> str:
+        lines = []
+        for i, ex in enumerate(examples, 1):
+            sentence = ex.get("sentence", "")
+            entities = ex.get("entities", [])
+            entities_json = json.dumps(
+                [{"entity": e[0], "type": e[1]} for e in entities],
+                ensure_ascii=False,
+            )
+            lines.append(f'Ejemplo {i}:\nTexto: "{sentence}"\nJSON: {entities_json}')
+        return "\n\n".join(lines)
+
     def _extract_json(self, response: str) -> list:
-        """Try to extract a JSON list from the response."""
-        # Look for JSON array in response
+        """Extrae un array JSON de la respuesta."""
+        # Limpiar markdown fences
+        response = re.sub(r"```json|```", "", response).strip()
+
         match = re.search(r"\[.*?\]", response, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group())
             except json.JSONDecodeError:
                 pass
-        # Fallback: try whole response
         try:
-            return json.loads(response.strip())
+            return json.loads(response)
         except json.JSONDecodeError:
             return []
 
+    @staticmethod
     def _find_token_span(
-        self, tokens: List[str], entity_tokens: List[str]
-    ) -> tuple | None:
-        """Find the start/end token indices of an entity span (case-insensitive)."""
+        tokens: List[str], entity_tokens: List[str]
+    ) -> Optional[tuple]:
+        """Busca el span de una entidad en la lista de tokens (case-insensitive)."""
         n = len(entity_tokens)
         tokens_lower = [t.lower() for t in tokens]
         for i in range(len(tokens_lower) - n + 1):
-            if tokens_lower[i : i + n] == entity_tokens:
+            if tokens_lower[i: i + n] == entity_tokens:
                 return (i, i + n - 1)
         return None
