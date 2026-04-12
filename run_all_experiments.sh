@@ -5,6 +5,7 @@ set -e
 
 WANDB_PROJECT_NER="bionlp2026-ner"
 WANDB_PROJECT_ML="bionlp2026-multilabel"
+export WANDB_TAGS="v3-chat-template-fix"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 

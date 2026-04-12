@@ -171,7 +171,8 @@ def run_decoder(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
     )
 
     predictor = MultiLabelPredictor(model, dataset)
-    output_dir = get_output_dir("decoder", args.model_name)
+    strategy_tag = "few_shot" if args.few_shot else "zero_shot"
+    output_dir = get_output_dir("decoder", args.model_name, strategy_tag)
     predictor.save_predictions(split="test", output_path=output_dir)
 
     metrics_path = Path(output_dir) / "metrics.json"

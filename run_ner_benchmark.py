@@ -183,7 +183,10 @@ def run_decoder(args, dataset: NERDataset, wandb_run=None) -> None:
     )
 
     predictor = NERPredictor(model, dataset)
-    output_dir = get_output_dir("decoder", args.model_name)
+    strategy_tag = args.prompt_strategy
+    if args.self_verification:
+        strategy_tag += "_verify"
+    output_dir = get_output_dir("decoder", args.model_name, strategy_tag)
     predictor.save_predictions(split="test", output_path=output_dir)
 
     metrics_path = Path(output_dir) / "metrics.json"
