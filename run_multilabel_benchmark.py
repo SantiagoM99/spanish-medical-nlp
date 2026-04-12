@@ -33,13 +33,30 @@ Usage examples:
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from utils.multilabel_datareader import MultiLabelDataset
+import wandb
 from evaluation.multilabel_predictor import MultiLabelPredictor
+from models.encoder_multilabel import EncoderMultiLabelModel
+from models.huggingface_llm import HuggingFaceLLM
+from models.llm_multilabel_model import LLMMultiLabelModel
+from models.peft_multilabel_model import PEFTMultiLabelModel
+from prompts.multilabel_prompt import MultiLabelPromptTemplate
+from utils.multilabel_datareader import MultiLabelDataset
+
+
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def get_output_dir(model_type: str, model_name: str, peft_method: str = "") -> str:
@@ -49,11 +66,9 @@ def get_output_dir(model_type: str, model_name: str, peft_method: str = "") -> s
 
 
 def init_wandb(args, dataset: MultiLabelDataset):
-    """Inicializa W&B si se especificó --wandb_project."""
     if not args.wandb_project:
         return None
     try:
-        import wandb
         run = wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name or f"{args.model_type}_{args.model_name.split('/')[-1]}",
@@ -82,24 +97,27 @@ def init_wandb(args, dataset: MultiLabelDataset):
         return None
 
 
+def _flatten_metrics(metrics: dict) -> dict:
+    return {
+        f"{key}/{sub_key}": sub_value
+        for key, value in metrics.items()
+        if isinstance(value, dict)
+        for sub_key, sub_value in value.items()
+    } | {
+        key: value
+        for key, value in metrics.items()
+        if not isinstance(value, dict)
+    }
+
+
 def log_metrics_to_wandb(wandb_run, metrics: dict) -> None:
     if wandb_run is None:
         return
-    import wandb
-    flat = {}
-    for k, v in metrics.items():
-        if isinstance(v, dict):
-            for sub_k, sub_v in v.items():
-                flat[f"{k}/{sub_k}"] = sub_v
-        else:
-            flat[k] = v
-    wandb_run.log(flat)
+    wandb_run.log(_flatten_metrics(metrics))
     wandb_run.finish()
 
 
 def run_encoder(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
-    from models.encoder_multilabel import EncoderMultiLabelModel
-
     print(f"\n[Encoder Multi-label] {args.model_name}")
     model = EncoderMultiLabelModel(
         model_name=args.model_name,
@@ -135,10 +153,6 @@ def run_encoder(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
 
 
 def run_decoder(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
-    from models.huggingface_llm import HuggingFaceLLM
-    from models.llm_multilabel_model import LLMMultiLabelModel
-    from prompts.multilabel_prompt import MultiLabelPromptTemplate
-
     print(f"\n[Decoder Multi-label zero-shot] {args.model_name}")
     llm = HuggingFaceLLM(
         model_name=args.model_name,
@@ -167,8 +181,6 @@ def run_decoder(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
 
 
 def run_peft(args, dataset: MultiLabelDataset, wandb_run=None) -> None:
-    from models.peft_multilabel_model import PEFTMultiLabelModel
-
     use_dora = args.peft_method == "dora"
     print(f"\n[PEFT Multi-label — {args.peft_method.upper()}] {args.model_name}")
 
@@ -288,6 +300,8 @@ def main():
     print(f"Text mode  : {args.text_mode}")
     print(f"Filter geo : {args.filter_geographicals}")
     print("=" * 60)
+
+    set_seed(42)
 
     print("\nLoading dataset...")
     dataset = MultiLabelDataset(

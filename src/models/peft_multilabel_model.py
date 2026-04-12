@@ -11,6 +11,7 @@ Generative format:
 from typing import List, Optional, Tuple
 
 import torch
+from tqdm import tqdm
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
@@ -123,11 +124,13 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        n_gpus = torch.cuda.device_count()
+        use_device_map = bnb_config or n_gpus > 1
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=bnb_config,
             torch_dtype=torch.float16,
-            device_map="auto" if bnb_config else None,
+            device_map="auto" if use_device_map else None,
         )
 
         if bnb_config:
@@ -177,10 +180,10 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
             per_device_eval_batch_size=batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             learning_rate=learning_rate,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
-            fp16=True,
+            fp16=torch.cuda.is_available(),
             logging_steps=50,
             report_to="none",
             optim="paged_adamw_8bit",
@@ -200,7 +203,7 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
         self.model.eval()
         all_predictions = []
 
-        for text in texts:
+        for text in tqdm(texts, desc="PEFT multilabel inference"):
             prompt = self.PROMPT_TEMPLATE.format(labels=self.labels_str, text=text)
             inputs = self.tokenizer(
                 prompt, return_tensors="pt", truncation=True, max_length=self.max_length

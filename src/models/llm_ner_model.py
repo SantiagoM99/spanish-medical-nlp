@@ -11,6 +11,8 @@ Soporta:
 
 from typing import List, Optional
 
+from tqdm import tqdm
+
 from models.base_llm import BaseLLM
 from models.base_ner import BaseNERModel
 from prompts.ner_prompt import NERPromptTemplate
@@ -57,15 +59,16 @@ class LLMNERModel(BaseNERModel):
         )
 
     def predict(self, sentences: List[List[str]]) -> List[List[str]]:
-        """
-        Predice BIO labels para una lista de oraciones tokenizadas.
+        """Predice BIO labels para una lista de oraciones tokenizadas.
 
         Returns:
             Lista de listas de BIO labels, alineada token a token con `sentences`.
         """
+        self.llm.model.eval()
         all_predictions = []
+        n_batches = (len(sentences) + self.batch_size - 1) // self.batch_size
 
-        for i in range(0, len(sentences), self.batch_size):
+        for i in tqdm(range(0, len(sentences), self.batch_size), total=n_batches, desc="NER inference"):
             batch = sentences[i : i + self.batch_size]
 
             # Construir prompts (con k-NN si aplica)

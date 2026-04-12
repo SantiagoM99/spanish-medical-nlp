@@ -23,7 +23,33 @@ from models.base_ner import BaseNERModel
 
 
 class TokenClassificationDataset(Dataset):
-    """Tokenizes and aligns labels for sub-word tokenization."""
+
+    @staticmethod
+    def _split_long_sentences(
+        sentences: List[List[str]],
+        labels: List[List[str]],
+        tokenizer,
+        max_length: int,
+    ) -> tuple:
+        new_sentences, new_labels = [], []
+        for tokens, token_labels in zip(sentences, labels):
+            enc = tokenizer(tokens, is_split_into_words=True, truncation=False)
+            if len(enc["input_ids"]) <= max_length:
+                new_sentences.append(tokens)
+                new_labels.append(token_labels)
+                continue
+            n_subwords = len(enc["input_ids"]) - 2
+            ratio = n_subwords / len(tokens)
+            words_per_chunk = max(1, int((max_length - 2) / ratio * 0.9))
+            start = 0
+            while start < len(tokens):
+                end = min(start + words_per_chunk, len(tokens))
+                while end < len(tokens) and token_labels[end].startswith("I-"):
+                    end += 1
+                new_sentences.append(tokens[start:end])
+                new_labels.append(token_labels[start:end])
+                start = end
+        return new_sentences, new_labels
 
     def __init__(
         self,
@@ -33,6 +59,9 @@ class TokenClassificationDataset(Dataset):
         label2id: dict,
         max_length: int = 512,
     ):
+        sentences, labels = self._split_long_sentences(
+            sentences, labels, tokenizer, max_length
+        )
         self.encodings = []
         for tokens, token_labels in zip(sentences, labels):
             encoding = tokenizer(
@@ -51,7 +80,6 @@ class TokenClassificationDataset(Dataset):
                 elif word_id != prev_word_id:
                     aligned_labels.append(label2id.get(token_labels[word_id], 0))
                 else:
-                    # For sub-word pieces: use -100 to ignore in loss
                     aligned_labels.append(-100)
                 prev_word_id = word_id
             encoding["labels"] = aligned_labels
@@ -114,7 +142,6 @@ class EncoderNERModel(BaseNERModel):
         learning_rate: float = 2e-5,
         weight_decay: float = 0.01,
     ) -> None:
-        """Fine-tune the encoder on training data."""
         train_dataset = TokenClassificationDataset(
             train_sentences, train_labels, self.tokenizer, self.label2id, self.max_length
         )
@@ -131,7 +158,7 @@ class EncoderNERModel(BaseNERModel):
             per_device_eval_batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
@@ -145,65 +172,75 @@ class EncoderNERModel(BaseNERModel):
             args=args,
             train_dataset=train_dataset,
             eval_dataset=dev_dataset,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
             data_collator=data_collator,
         )
         trainer.train()
 
+    def _predict_chunk(self, tokens: List[str]) -> List[str]:
+        encoding = self.tokenizer(
+            tokens,
+            is_split_into_words=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        word_ids = encoding.word_ids(batch_index=0)
+        encoding = {k: v.to(self.device) for k, v in encoding.items()}
+
+        with torch.no_grad():
+            logits = self.model(**encoding).logits[0]
+
+        predicted_ids = torch.argmax(logits, dim=-1).cpu().tolist()
+
+        first_subword_labels = {
+            word_id: self.id2label[pred_id]
+            for word_id, pred_id in zip(word_ids, predicted_ids)
+            if word_id is not None
+        }
+        return list(first_subword_labels.values())
+
+    def _subword_safe_chunk_size(self, tokens: List[str]) -> int:
+        subword_count = len(self.tokenizer(
+            tokens, is_split_into_words=True, truncation=False
+        )["input_ids"]) - 2
+        subword_ratio = subword_count / len(tokens)
+        return max(1, int((self.max_length - 2) / subword_ratio * 0.9))
+
+    def _predict_with_sliding_window(self, tokens: List[str]) -> List[str]:
+        chunk_size = self._subword_safe_chunk_size(tokens)
+        labels = [None] * len(tokens)
+        start = 0
+        while start < len(tokens):
+            end = min(start + chunk_size, len(tokens))
+            chunk_labels = self._predict_chunk(tokens[start:end])
+            labels[start:start + len(chunk_labels)] = [
+                existing or predicted
+                for existing, predicted in zip(labels[start:start + len(chunk_labels)], chunk_labels)
+            ]
+            start += chunk_size
+        return [label or "O" for label in labels]
+
+    def _needs_sliding_window(self, tokens: List[str]) -> bool:
+        subword_length = len(self.tokenizer(
+            tokens, is_split_into_words=True, truncation=False
+        )["input_ids"])
+        return subword_length > self.max_length
+
     def predict(self, sentences: List[List[str]]) -> List[List[str]]:
-        """
-        Predict BIO labels for tokenized sentences.
-
-        Args:
-            sentences: List of tokenized sentences (list of token strings).
-
-        Returns:
-            List of label lists, one per sentence (aligned to input tokens).
-        """
         self.model.eval()
-        all_predictions = []
-
-        for tokens in sentences:
-            encoding = self.tokenizer(
-                tokens,
-                is_split_into_words=True,
-                truncation=True,
-                max_length=self.max_length,
-                return_tensors="pt",
-            )
-            encoding = {k: v.to(self.device) for k, v in encoding.items()}
-            word_ids = self.tokenizer(
-                tokens, is_split_into_words=True
-            ).word_ids()
-
-            with torch.no_grad():
-                outputs = self.model(**encoding)
-
-            logits = outputs.logits[0]
-            predictions = torch.argmax(logits, dim=-1).cpu().tolist()
-
-            # Map back to original tokens (first sub-word only)
-            token_labels = []
-            prev_word_id = None
-            for word_id, pred_id in zip(word_ids, predictions):
-                if word_id is None:
-                    continue
-                if word_id != prev_word_id:
-                    token_labels.append(self.id2label[pred_id])
-                prev_word_id = word_id
-
-            all_predictions.append(token_labels)
-
-        return all_predictions
+        return [
+            self._predict_with_sliding_window(tokens) if self._needs_sliding_window(tokens)
+            else self._predict_chunk(tokens)
+            for tokens in sentences
+        ]
 
     def save(self, output_dir: str) -> None:
-        """Save model and tokenizer."""
         self.model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
 
     @classmethod
     def load(cls, model_dir: str, label2id: dict, id2label: dict) -> "EncoderNERModel":
-        """Load a saved model."""
         instance = cls.__new__(cls)
         instance.model_name = model_dir
         instance.label2id = label2id

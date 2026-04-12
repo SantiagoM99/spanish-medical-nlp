@@ -56,3 +56,5 @@ huggingface/
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
+experiments.log

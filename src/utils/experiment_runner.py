@@ -157,7 +157,7 @@ class ExperimentRunner:
             "output_dir": output_dir,
             **metrics,
         }
-        print(f"  -> F1 micro: {metrics.get('f1_micro', 'N/A'):.4f}" if "f1_micro" in metrics else "  -> metrics not available")
+        print(f"  -> F1 micro: {metrics.get('micro_f1', 'N/A'):.4f}" if "micro_f1" in metrics else "  -> metrics not available")
         return result
 
     def _init_wandb(self, model_name, text_mode, filter_geo, dataset):
@@ -209,8 +209,8 @@ class ExperimentRunner:
         print("=" * len(header))
         for r in self.results:
             model_short = r["model"].split("/")[-1][:38]
-            f1_micro = f"{r['f1_micro']:.4f}" if "f1_micro" in r else "N/A"
-            f1_macro = f"{r.get('f1_macro', 'N/A')}"
+            f1_micro = f"{r['micro_f1']:.4f}" if "micro_f1" in r else "N/A"
+            f1_macro = f"{r.get('macro_f1', 'N/A')}"
             if isinstance(f1_macro, float):
                 f1_macro = f"{f1_macro:.4f}"
             print(
