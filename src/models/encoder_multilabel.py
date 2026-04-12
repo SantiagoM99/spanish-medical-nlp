@@ -125,7 +125,7 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
             per_device_eval_batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
@@ -139,12 +139,14 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
             args=args,
             train_dataset=train_dataset,
             eval_dataset=dev_dataset,
-            tokenizer=self.tokenizer,
+            processing_class=self.tokenizer,
         )
         trainer.train()
 
     def predict(self, texts: List[str]) -> List[List[str]]:
         """Predict labels using threshold on sigmoid probabilities."""
+        if not texts:
+            return []
         _, scores_list = zip(*self.predict_with_scores(texts))
         predictions = []
         for label_names, scores in zip(

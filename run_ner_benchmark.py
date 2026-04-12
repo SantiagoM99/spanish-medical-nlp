@@ -29,13 +29,31 @@ Usage examples:
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from utils.ner_datareader import NERDataset
+import wandb
 from evaluation.ner_predictor import NERPredictor
+from models.encoder_ner import EncoderNERModel
+from models.huggingface_llm import HuggingFaceLLM
+from models.llm_ner_model import LLMNERModel
+from models.peft_ner_model import PEFTNERModel
+from prompts.ner_prompt import NERPromptTemplate
+from utils.knn_retrieval import KNNRetriever
+from utils.ner_datareader import NERDataset
+
+
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def get_output_dir(model_type: str, model_name: str, peft_method: str = "") -> str:
@@ -45,11 +63,9 @@ def get_output_dir(model_type: str, model_name: str, peft_method: str = "") -> s
 
 
 def init_wandb(args, dataset: NERDataset):
-    """Inicializa W&B si se especificó --wandb_project."""
     if not args.wandb_project:
         return None
     try:
-        import wandb
         run = wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name or f"{args.model_type}_{args.model_name.split('/')[-1]}",
@@ -77,24 +93,27 @@ def init_wandb(args, dataset: NERDataset):
         return None
 
 
+def _flatten_metrics(metrics: dict) -> dict:
+    return {
+        f"{key}/{sub_key}": sub_value
+        for key, value in metrics.items()
+        if isinstance(value, dict)
+        for sub_key, sub_value in value.items()
+    } | {
+        key: value
+        for key, value in metrics.items()
+        if not isinstance(value, dict)
+    }
+
+
 def log_metrics_to_wandb(wandb_run, metrics: dict) -> None:
     if wandb_run is None:
         return
-    import wandb
-    flat = {}
-    for k, v in metrics.items():
-        if isinstance(v, dict):
-            for sub_k, sub_v in v.items():
-                flat[f"{k}/{sub_k}"] = sub_v
-        else:
-            flat[k] = v
-    wandb_run.log(flat)
+    wandb_run.log(_flatten_metrics(metrics))
     wandb_run.finish()
 
 
 def run_encoder(args, dataset: NERDataset, wandb_run=None) -> None:
-    from models.encoder_ner import EncoderNERModel
-
     print(f"\n[Encoder NER] {args.model_name}")
     model = EncoderNERModel(
         model_name=args.model_name,
@@ -129,10 +148,6 @@ def run_encoder(args, dataset: NERDataset, wandb_run=None) -> None:
 
 
 def run_decoder(args, dataset: NERDataset, wandb_run=None) -> None:
-    from models.huggingface_llm import HuggingFaceLLM
-    from models.llm_ner_model import LLMNERModel
-    from prompts.ner_prompt import NERPromptTemplate
-
     print(f"\n[Decoder NER — {args.prompt_strategy}] {args.model_name}")
     llm = HuggingFaceLLM(
         model_name=args.model_name,
@@ -146,7 +161,6 @@ def run_decoder(args, dataset: NERDataset, wandb_run=None) -> None:
 
     knn_retriever = None
     if args.prompt_strategy == "knn_few_shot":
-        from utils.knn_retrieval import KNNRetriever
         knn_path = Path(args.data_dir) / "knn_index"
         if knn_path.exists():
             knn_retriever = KNNRetriever(index_dir=str(knn_path))
@@ -179,8 +193,6 @@ def run_decoder(args, dataset: NERDataset, wandb_run=None) -> None:
 
 
 def run_peft(args, dataset: NERDataset, wandb_run=None) -> None:
-    from models.peft_ner_model import PEFTNERModel
-
     use_dora = args.peft_method == "dora"
     print(f"\n[PEFT NER — {args.peft_method.upper()}] {args.model_name}")
 
@@ -293,6 +305,8 @@ def main():
     print(f"Model      : {args.model_name}")
     print(f"Data dir   : {args.data_dir}")
     print("=" * 60)
+
+    set_seed(42)
 
     print("\nLoading dataset...")
     dataset = NERDataset(data_dir=args.data_dir)

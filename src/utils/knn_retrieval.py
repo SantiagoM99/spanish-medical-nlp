@@ -51,8 +51,7 @@ class KNNRetriever:
 
         # Selección de dispositivo
         if device is None:
-            visible = os.getenv("CUDA_VISIBLE_DEVICES", "0")
-            device = f"cuda:{visible.split(',')[0]}" if torch.cuda.is_available() else "cpu"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
         if index_dir and os.path.exists(index_dir):
@@ -144,14 +143,15 @@ class KNNRetriever:
 
         from sentence_transformers import SentenceTransformer
 
-        # Usar CPU para inference para evitar conflictos de memoria
-        model = SentenceTransformer(self.embedding_model, device="cpu")
-        query_emb = model.encode(
+        # Cachear el modelo de embeddings para no recargarlo en cada query
+        if not hasattr(self, "_query_model") or self._query_model is None:
+            self._query_model = SentenceTransformer(self.embedding_model, device="cpu")
+
+        query_emb = self._query_model.encode(
             [query],
             normalize_embeddings=True,
             device="cpu",
         ).astype(np.float32)
-        del model
 
         scores, indices = self.index.search(query_emb, k)
         return [

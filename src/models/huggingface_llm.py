@@ -43,11 +43,13 @@ class HuggingFaceLLM(BaseLLM):
                 bnb_4bit_quant_type="nf4",
             )
 
+        n_gpus = torch.cuda.device_count()
+        use_device_map = quantization_config or n_gpus > 1
         model_kwargs = {
             "quantization_config": quantization_config,
             "torch_dtype": torch_dtype or torch.float16,
             "trust_remote_code": trust_remote_code,
-            "device_map": "auto" if quantization_config else None,
+            "device_map": "auto" if use_device_map else None,
         }
         if use_flash_attention:
             model_kwargs["attn_implementation"] = "flash_attention_2"
@@ -56,11 +58,11 @@ class HuggingFaceLLM(BaseLLM):
         print(f"Loading {model_name} | device={self.device} | quant={quant_str}")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=trust_remote_code
+            model_name, trust_remote_code=trust_remote_code, padding_side="left"
         )
         self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
-        if not quantization_config:
+        if not use_device_map:
             self.model.to(self.device)
 
         if self.tokenizer.pad_token is None:

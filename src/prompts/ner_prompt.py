@@ -112,16 +112,6 @@ Respuesta:"""
         knn_examples: Optional[List[Dict]] = None,
         **kwargs,
     ) -> str:
-        """
-        Crea el prompt NER para una oración tokenizada.
-
-        Args:
-            tokens: Lista de tokens de la oración.
-            knn_examples: Ejemplos recuperados por k-NN (solo para strategy='knn_few_shot').
-
-        Returns:
-            Prompt formateado.
-        """
         sentence = " ".join(tokens)
 
         if self.strategy == "knn_few_shot" and knn_examples:
@@ -145,17 +135,6 @@ Respuesta:"""
     def build_verification_prompt(
         self, sentence: str, entity: str, entity_type: str
     ) -> str:
-        """
-        Construye un prompt de auto-verificación para una entidad.
-
-        Args:
-            sentence: Oración original.
-            entity: Texto de la entidad a verificar.
-            entity_type: Tipo predicho.
-
-        Returns:
-            Prompt de verificación.
-        """
         return self._VERIFICATION.format(
             entity_types=self.entity_types_str,
             sentence=sentence,
@@ -164,39 +143,35 @@ Respuesta:"""
         )
 
     def parse_response(self, response: str, tokens: List[str]) -> List[str]:
-        """
-        Parsea la respuesta del LLM y la alinea como BIO labels a los tokens.
-
-        Args:
-            response: Respuesta cruda del modelo.
-            tokens: Tokens originales de la oración.
-
-        Returns:
-            Lista de BIO labels alineada con tokens.
-        """
         labels = ["O"] * len(tokens)
         entities = self._extract_json(response)
         if not entities:
             return labels
 
+        consumed = set()
         for item in entities:
+            if not isinstance(item, dict):
+                continue
             entity_text = str(item.get("entity", "")).lower().strip()
-            entity_type = str(item.get("type", "Anatomical_entity")).strip()
-            if not entity_text:
+            entity_type = str(item.get("type", "")).strip()
+            if not entity_text or entity_type not in self.type_names:
                 continue
 
-            matched = self._find_token_span(tokens, entity_text.split())
-            if matched is not None:
+            search_from = 0
+            while True:
+                matched = self._find_token_span(tokens, entity_text.split(), search_from)
+                if matched is None:
+                    break
                 start, end = matched
-                labels[start] = f"B-{entity_type}"
-                for i in range(start + 1, end + 1):
-                    labels[i] = f"I-{entity_type}"
+                if start not in consumed:
+                    consumed.update(range(start, end + 1))
+                    labels[start] = f"B-{entity_type}"
+                    for i in range(start + 1, end + 1):
+                        labels[i] = f"I-{entity_type}"
+                    break
+                search_from = end + 1
 
         return labels
-
-    # ------------------------------------------------------------------
-    # Helpers privados
-    # ------------------------------------------------------------------
 
     def _format_knn_examples(self, examples: List[Dict]) -> str:
         lines = []
@@ -211,8 +186,6 @@ Respuesta:"""
         return "\n\n".join(lines)
 
     def _extract_json(self, response: str) -> list:
-        """Extrae un array JSON de la respuesta."""
-        # Limpiar markdown fences
         response = re.sub(r"```json|```", "", response).strip()
 
         match = re.search(r"\[.*?\]", response, re.DOTALL)
@@ -222,18 +195,20 @@ Respuesta:"""
             except json.JSONDecodeError:
                 pass
         try:
-            return json.loads(response)
+            parsed = json.loads(response)
+            return parsed if isinstance(parsed, list) else []
         except json.JSONDecodeError:
             return []
 
     @staticmethod
     def _find_token_span(
-        tokens: List[str], entity_tokens: List[str]
+        tokens: List[str], entity_tokens: List[str], start_from: int = 0
     ) -> Optional[tuple]:
-        """Busca el span de una entidad en la lista de tokens (case-insensitive)."""
-        n = len(entity_tokens)
+        entity_len = len(entity_tokens)
         tokens_lower = [t.lower() for t in tokens]
-        for i in range(len(tokens_lower) - n + 1):
-            if tokens_lower[i: i + n] == entity_tokens:
-                return (i, i + n - 1)
-        return None
+        return next(
+            ((i, i + entity_len - 1)
+             for i in range(start_from, len(tokens_lower) - entity_len + 1)
+             if tokens_lower[i: i + entity_len] == entity_tokens),
+            None,
+        )

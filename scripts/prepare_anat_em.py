@@ -61,7 +61,6 @@ def read_nersuite_file(filepath: Path) -> list[list[tuple[str, str]]]:
                     label = parts[1]
                     current.append((token, label))
                 elif len(parts) == 1 and parts[0]:
-                    # Some files may have only the token with O label
                     current.append((parts[0], "O"))
 
     if current:

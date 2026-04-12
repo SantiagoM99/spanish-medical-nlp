@@ -12,6 +12,7 @@ using a generative format:
 from typing import List, Optional
 
 import torch
+from tqdm import tqdm
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
@@ -135,11 +136,13 @@ class PEFTNERModel(BaseNERModel):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        n_gpus = torch.cuda.device_count()
+        use_device_map = bnb_config or n_gpus > 1
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=bnb_config,
             torch_dtype=torch.float16,
-            device_map="auto" if bnb_config else None,
+            device_map="auto" if use_device_map else None,
         )
 
         if bnb_config:
@@ -191,10 +194,10 @@ class PEFTNERModel(BaseNERModel):
             per_device_eval_batch_size=batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             learning_rate=learning_rate,
-            evaluation_strategy="epoch",
+            eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
-            fp16=True,
+            fp16=torch.cuda.is_available(),
             logging_steps=50,
             report_to="none",
             optim="paged_adamw_8bit",
@@ -215,7 +218,7 @@ class PEFTNERModel(BaseNERModel):
         self.model.eval()
         all_predictions = []
 
-        for tokens in sentences:
+        for tokens in tqdm(sentences, desc="PEFT NER inference"):
             prompt = self.PROMPT_TEMPLATE.format(
                 entity_types=self.entity_types_str,
                 tokens=" ".join(tokens),

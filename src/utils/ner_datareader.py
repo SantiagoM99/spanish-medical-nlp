@@ -83,6 +83,14 @@ class NERDataset:
             print(f"  AVISO: {len(missing)} archivos no encontrados (ej: {missing[:3]})")
         return sentences
 
+    @staticmethod
+    def _clean_label(label: str) -> str:
+        label = label.strip()
+        if label in ("", "=", "o"):
+            return "O"
+        label = label.replace("Multi_tissue_structure", "Multi-tissue_structure")
+        return label
+
     def _parse_nersuite(self, filepath: Path) -> list:
         """
         Parsea un archivo .nersuite a lista de oraciones.
@@ -102,7 +110,7 @@ class NERDataset:
                 else:
                     parts = line.split("\t")
                     token = parts[0]
-                    label = parts[1] if len(parts) > 1 else "O"
+                    label = self._clean_label(parts[1]) if len(parts) > 1 else "O"
                     current.append((token, label))
         if current:
             sentences.append(current)

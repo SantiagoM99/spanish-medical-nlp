@@ -6,6 +6,8 @@ Zero-shot / few-shot multi-label classification using a decoder LLM.
 
 from typing import List, Optional, Tuple
 
+from tqdm import tqdm
+
 from models.base_llm import BaseLLM
 from models.base_multilabel import BaseMultiLabelModel
 from prompts.multilabel_prompt import MultiLabelPromptTemplate
@@ -32,14 +34,19 @@ class LLMMultiLabelModel(BaseMultiLabelModel):
         self.batch_size = batch_size
 
     def predict(self, texts: List[str]) -> List[List[str]]:
-        prompts = [self.prompt_template.create_prompt(text=text) for text in texts]
-        responses = self.llm.batch_generate(
-            prompts=prompts,
-            max_tokens=100,
-            do_sample=False,
-            batch_size=self.batch_size,
-        )
-        return [self.prompt_template.parse_response(r) for r in responses]
+        self.llm.model.eval()
+        all_predictions = []
+        for i in tqdm(range(0, len(texts), self.batch_size), desc="Multilabel inference"):
+            batch = texts[i : i + self.batch_size]
+            prompts = [self.prompt_template.create_prompt(text=text) for text in batch]
+            responses = self.llm.batch_generate(
+                prompts=prompts,
+                max_tokens=100,
+                do_sample=False,
+                batch_size=self.batch_size,
+            )
+            all_predictions.extend([self.prompt_template.parse_response(r) for r in responses])
+        return all_predictions
 
     def predict_with_scores(
         self, texts: List[str]
