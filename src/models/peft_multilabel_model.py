@@ -8,7 +8,7 @@ Generative format:
   Output: "B, C, D"   (comma-separated MeSH label codes)
 """
 
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import torch
 from tqdm import tqdm
@@ -43,14 +43,16 @@ class MultiLabelSeq2SeqDataset(Dataset):
         tokenizer,
         available_labels: List[str],
         max_length: int = 512,
+        format_fn: Optional[Callable[[str], str]] = None,
     ):
         self.examples = []
         labels_str = ", ".join(available_labels)
 
         for text, label_list in zip(texts, labels):
-            prompt = self.PROMPT_TEMPLATE.format(labels=labels_str, text=text)
+            raw_prompt = self.PROMPT_TEMPLATE.format(labels=labels_str, text=text)
+            prompt = format_fn(raw_prompt) if format_fn else raw_prompt
             target = ", ".join(sorted(label_list)) if label_list else "ninguno"
-            full_text = prompt + " " + target
+            full_text = prompt + target + tokenizer.eos_token
 
             encoding = tokenizer(
                 full_text, truncation=True, max_length=max_length, padding=False
@@ -151,6 +153,16 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
         if not bnb_config:
             self.model.to(self.device)
 
+    def _format_prompt(self, prompt: str) -> str:
+        """Wrap a raw prompt in the model's chat template when available."""
+        if not hasattr(self.tokenizer, "chat_template") or not self.tokenizer.chat_template:
+            return prompt
+        return self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
     def train(
         self,
         train_texts: List[str],
@@ -164,10 +176,14 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
         learning_rate: float = 2e-4,
     ) -> None:
         train_dataset = MultiLabelSeq2SeqDataset(
-            train_texts, train_labels, self.tokenizer, self.available_labels, self.max_length
+            train_texts, train_labels, self.tokenizer,
+            self.available_labels, self.max_length,
+            format_fn=self._format_prompt,
         )
         dev_dataset = MultiLabelSeq2SeqDataset(
-            dev_texts, dev_labels, self.tokenizer, self.available_labels, self.max_length
+            dev_texts, dev_labels, self.tokenizer,
+            self.available_labels, self.max_length,
+            format_fn=self._format_prompt,
         )
         data_collator = DataCollatorForSeq2Seq(
             self.tokenizer, model=self.model, pad_to_multiple_of=8
@@ -204,7 +220,9 @@ class PEFTMultiLabelModel(BaseMultiLabelModel):
         all_predictions = []
 
         for text in tqdm(texts, desc="PEFT multilabel inference"):
-            prompt = self.PROMPT_TEMPLATE.format(labels=self.labels_str, text=text)
+            prompt = self._format_prompt(
+                self.PROMPT_TEMPLATE.format(labels=self.labels_str, text=text)
+            )
             inputs = self.tokenizer(
                 prompt, return_tensors="pt", truncation=True, max_length=self.max_length
             ).to(self.device)

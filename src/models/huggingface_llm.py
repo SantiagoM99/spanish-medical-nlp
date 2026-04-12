@@ -72,6 +72,16 @@ class HuggingFaceLLM(BaseLLM):
         self.model.eval()
         print(f"Model loaded successfully.")
 
+    def _format_prompt(self, prompt: str) -> str:
+        """Wrap a raw prompt in the model's chat template when available."""
+        if not hasattr(self.tokenizer, "chat_template") or not self.tokenizer.chat_template:
+            return prompt
+        return self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
     def generate(
         self,
         prompt: str,
@@ -80,6 +90,7 @@ class HuggingFaceLLM(BaseLLM):
         top_p: float = 0.9,
         **kwargs,
     ) -> str:
+        prompt = self._format_prompt(prompt)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(
@@ -106,7 +117,7 @@ class HuggingFaceLLM(BaseLLM):
     ) -> List[str]:
         responses = []
         for i in range(0, len(prompts), batch_size):
-            batch = prompts[i : i + batch_size]
+            batch = [self._format_prompt(p) for p in prompts[i : i + batch_size]]
             inputs = self.tokenizer(
                 batch,
                 return_tensors="pt",

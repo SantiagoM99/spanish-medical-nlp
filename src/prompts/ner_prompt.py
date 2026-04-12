@@ -30,7 +30,7 @@ class NERPromptTemplate(BasePromptTemplate):
     _ZERO_SHOT = """\
 Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
 
-Tipos de entidades válidos: {entity_types}
+Los únicos tipos de entidades válidos son: {entity_types}
 
 Extrae TODAS las entidades del texto. Responde SOLO con un array JSON:
 [{{"entity": "texto_exacto", "type": "tipo"}}]
@@ -43,7 +43,7 @@ JSON:"""
     _FEW_SHOT = """\
 Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
 
-Tipos de entidades válidos: {entity_types}
+Los únicos tipos de entidades válidos son: {entity_types}
 
 EJEMPLOS:
 
@@ -63,7 +63,7 @@ JSON:"""
     _KNN_FEW_SHOT = """\
 Eres un sistema experto en reconocimiento de entidades de anatomía médica en español.
 
-Tipos de entidades válidos: {entity_types}
+Los únicos tipos de entidades válidos son: {entity_types}
 
 EJEMPLOS DE ENTRENAMIENTO (ordenados por similitud con el texto):
 {examples_block}
@@ -75,7 +75,7 @@ JSON:"""
     _VERIFICATION = """\
 Eres un verificador experto de entidades biomédicas en español.
 
-Tipos válidos: {entity_types}
+Los únicos tipos válidos son: {entity_types}
 
 Verifica si la entidad extraída es correcta en el contexto del texto.
 
@@ -97,14 +97,13 @@ Respuesta:"""
         self.raw_entity_types = entity_types
         self.strategy = strategy
 
-        # Nombres limpios sin prefijos BIO
-        type_names = sorted(set(
-            et.replace("B-", "").replace("I-", "")
-            for et in entity_types
-            if et != "O"
-        ))
-        self.entity_types_str = ", ".join(type_names)
-        self.type_names = type_names
+        clean_types = set()
+        for label in entity_types:
+            if label == "O":
+                continue
+            clean_types.add(label.replace("B-", "").replace("I-", ""))
+        self.type_names = sorted(clean_types)
+        self.entity_types_str = ", ".join(self.type_names)
 
     def create_prompt(
         self,
