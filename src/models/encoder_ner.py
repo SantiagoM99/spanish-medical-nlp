@@ -193,11 +193,10 @@ class EncoderNERModel(BaseNERModel):
 
         predicted_ids = torch.argmax(logits, dim=-1).cpu().tolist()
 
-        first_subword_labels = {
-            word_id: self.id2label[pred_id]
-            for word_id, pred_id in zip(word_ids, predicted_ids)
-            if word_id is not None
-        }
+        first_subword_labels = {}
+        for word_id, pred_id in zip(word_ids, predicted_ids):
+            if word_id is not None and word_id not in first_subword_labels:
+                first_subword_labels[word_id] = self.id2label[pred_id]
         return list(first_subword_labels.values())
 
     def _subword_safe_chunk_size(self, tokens: List[str]) -> int:

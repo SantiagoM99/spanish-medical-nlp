@@ -9,7 +9,7 @@ using a generative format:
   Output: "O B-Multi-tissue_structure O O O O O"
 """
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import torch
 from tqdm import tqdm
@@ -27,12 +27,22 @@ from torch.utils.data import Dataset
 from models.base_ner import BaseNERModel
 
 
+def _strip_bio_prefixes(entity_types: List[str]) -> str:
+    """Convert BIO-tagged labels like ['O', 'B-Organ', 'I-Organ'] to 'Organ'."""
+    clean_types = set()
+    for label in entity_types:
+        if label == "O":
+            continue
+        clean_types.add(label.replace("B-", "").replace("I-", ""))
+    return ", ".join(sorted(clean_types))
+
+
 class NERSeq2SeqDataset(Dataset):
     """Formats NER examples as instruction-following sequences."""
 
     PROMPT_TEMPLATE = (
         "Eres un sistema de reconocimiento de entidades médicas. "
-        "Etiqueta cada token con BIO labels. Tipos de entidades: {entity_types}.\n\n"
+        "Etiqueta cada token con BIO labels. Los únicos tipos de entidades válidos son: {entity_types}.\n\n"
         "Tokens: {tokens}\n"
         "Etiquetas:"
     )
@@ -44,18 +54,18 @@ class NERSeq2SeqDataset(Dataset):
         tokenizer,
         entity_types: List[str],
         max_length: int = 512,
+        format_fn: Optional[Callable[[str], str]] = None,
     ):
         self.examples = []
-        entity_types_str = ", ".join(
-            sorted(set(et.replace("B-", "").replace("I-", "") for et in entity_types if et != "O"))
-        )
+        entity_types_str = _strip_bio_prefixes(entity_types)
         for tokens, token_labels in zip(sentences, labels):
-            prompt = self.PROMPT_TEMPLATE.format(
+            raw_prompt = self.PROMPT_TEMPLATE.format(
                 entity_types=entity_types_str,
                 tokens=" ".join(tokens),
             )
+            prompt = format_fn(raw_prompt) if format_fn else raw_prompt
             target = " ".join(token_labels)
-            full_text = prompt + " " + target
+            full_text = prompt + target + tokenizer.eos_token
             encoding = tokenizer(
                 full_text,
                 truncation=True,
@@ -94,7 +104,7 @@ class PEFTNERModel(BaseNERModel):
 
     PROMPT_TEMPLATE = (
         "Eres un sistema de reconocimiento de entidades médicas. "
-        "Etiqueta cada token con BIO labels. Tipos de entidades: {entity_types}.\n\n"
+        "Etiqueta cada token con BIO labels. Los únicos tipos de entidades válidos son: {entity_types}.\n\n"
         "Tokens: {tokens}\n"
         "Etiquetas:"
     )
@@ -163,6 +173,16 @@ class PEFTNERModel(BaseNERModel):
         if not bnb_config:
             self.model.to(self.device)
 
+    def _format_prompt(self, prompt: str) -> str:
+        """Wrap a raw prompt in the model's chat template when available."""
+        if not hasattr(self.tokenizer, "chat_template") or not self.tokenizer.chat_template:
+            return prompt
+        return self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
     def train(
         self,
         train_sentences: List[List[str]],
@@ -177,11 +197,13 @@ class PEFTNERModel(BaseNERModel):
     ) -> None:
         train_dataset = NERSeq2SeqDataset(
             train_sentences, train_labels, self.tokenizer,
-            self.entity_types, self.max_length
+            self.entity_types, self.max_length,
+            format_fn=self._format_prompt,
         )
         dev_dataset = NERSeq2SeqDataset(
             dev_sentences, dev_labels, self.tokenizer,
-            self.entity_types, self.max_length
+            self.entity_types, self.max_length,
+            format_fn=self._format_prompt,
         )
         data_collator = DataCollatorForSeq2Seq(
             self.tokenizer, model=self.model, pad_to_multiple_of=8
@@ -219,9 +241,11 @@ class PEFTNERModel(BaseNERModel):
         all_predictions = []
 
         for tokens in tqdm(sentences, desc="PEFT NER inference"):
-            prompt = self.PROMPT_TEMPLATE.format(
-                entity_types=self.entity_types_str,
-                tokens=" ".join(tokens),
+            prompt = self._format_prompt(
+                self.PROMPT_TEMPLATE.format(
+                    entity_types=self.entity_types_str,
+                    tokens=" ".join(tokens),
+                )
             )
             inputs = self.tokenizer(
                 prompt, return_tensors="pt", truncation=True, max_length=self.max_length

@@ -86,7 +86,7 @@ class NERDataset:
     @staticmethod
     def _clean_label(label: str) -> str:
         label = label.strip()
-        if label in ("", "=", "o"):
+        if label in ("", "=", "o", "O-e", "o-e"):
             return "O"
         label = label.replace("Multi_tissue_structure", "Multi-tissue_structure")
         return label
