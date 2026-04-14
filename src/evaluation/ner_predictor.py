@@ -79,15 +79,20 @@ class NERPredictor:
         output_dir = Path(output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Collect raw LLM responses if available (for decoder models)
+        raw_responses = getattr(self.model, "last_raw_responses", [])
+
         # Save per-sentence predictions
         predictions_file = output_dir / "predictions.jsonl"
         with open(predictions_file, "w", encoding="utf-8") as f:
-            for tokens, true, pred in zip(tokens_list, true_labels, pred_labels):
+            for i, (tokens, true, pred) in enumerate(zip(tokens_list, true_labels, pred_labels)):
                 record = {
                     "tokens": tokens,
                     "true_labels": true,
                     "pred_labels": pred,
                 }
+                if i < len(raw_responses):
+                    record["raw_responses"] = raw_responses[i]
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         # Save metrics summary

@@ -103,6 +103,7 @@ Respuesta:"""
                 continue
             clean_types.add(label.replace("B-", "").replace("I-", ""))
         self.type_names = sorted(clean_types)
+        self._type_names_lower = {t.lower(): t for t in self.type_names}
         self.entity_types_str = ", ".join(self.type_names)
 
     def create_prompt(
@@ -152,8 +153,9 @@ Respuesta:"""
             if not isinstance(item, dict):
                 continue
             entity_text = str(item.get("entity", "")).lower().strip()
-            entity_type = str(item.get("type", "")).strip()
-            if not entity_text or entity_type not in self.type_names:
+            raw_type = str(item.get("type", "")).strip()
+            entity_type = self._type_names_lower.get(raw_type.lower())
+            if not entity_text or entity_type is None:
                 continue
 
             search_from = 0
@@ -187,7 +189,7 @@ Respuesta:"""
     def _extract_json(self, response: str) -> list:
         response = re.sub(r"```json|```", "", response).strip()
 
-        match = re.search(r"\[.*?\]", response, re.DOTALL)
+        match = re.search(r"\[.*\]", response, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group())

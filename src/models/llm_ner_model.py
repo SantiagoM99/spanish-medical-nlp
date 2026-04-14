@@ -7,9 +7,11 @@ Soporta:
   - zero_shot / few_shot / knn_few_shot  (via NERPromptTemplate)
   - self_verification: segunda llamada al LLM por cada entidad extraída
                        para filtrar falsos positivos (+2-5% F1 según GPT-NER)
+  - Chunking automático: textos largos se parten en chunks solapados
+                         para mejorar recall en párrafos extensos.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from tqdm import tqdm
 
@@ -31,6 +33,9 @@ class LLMNERModel(BaseNERModel):
         knn_k: Número de ejemplos k-NN a recuperar.
         self_verification: Si True, verifica cada entidad con una segunda llamada al LLM.
         batch_size: Número de oraciones por batch.
+        max_chunk_tokens: Máximo de tokens (palabras) por chunk. Textos más largos
+                          se parten en chunks con solapamiento.
+        chunk_overlap: Número de tokens de solapamiento entre chunks consecutivos.
     """
 
     def __init__(
@@ -43,6 +48,8 @@ class LLMNERModel(BaseNERModel):
         knn_k: int = 5,
         self_verification: bool = False,
         batch_size: int = 4,
+        max_chunk_tokens: int = 80,
+        chunk_overlap: int = 10,
     ):
         super().__init__(model_name=f"{llm.model_name}_ner")
         self.llm = llm
@@ -52,53 +59,136 @@ class LLMNERModel(BaseNERModel):
         self.knn_k = knn_k
         self.self_verification = self_verification
         self.batch_size = batch_size
+        self.max_chunk_tokens = max_chunk_tokens
+        self.chunk_overlap = chunk_overlap
 
         self.prompt_template = prompt_template or NERPromptTemplate(
             entity_types=entity_types,
             strategy=strategy,
         )
 
+        # Stores raw LLM responses for the last predict() call (debugging)
+        self.last_raw_responses: List[List[str]] = []
+
+    # ------------------------------------------------------------------
+    # Chunking helpers
+    # ------------------------------------------------------------------
+
+    def _chunk_sentence(
+        self, tokens: List[str]
+    ) -> List[Tuple[int, int]]:
+        """Split a long token list into overlapping (start, end) spans."""
+        n = len(tokens)
+        if n <= self.max_chunk_tokens:
+            return [(0, n)]
+        spans = []
+        start = 0
+        step = self.max_chunk_tokens - self.chunk_overlap
+        while start < n:
+            end = min(start + self.max_chunk_tokens, n)
+            spans.append((start, end))
+            if end == n:
+                break
+            start += step
+        return spans
+
+    @staticmethod
+    def _merge_chunk_labels(
+        total_len: int,
+        spans: List[Tuple[int, int]],
+        chunk_labels_list: List[List[str]],
+    ) -> List[str]:
+        """Merge BIO labels from overlapping chunks.
+
+        For overlapping regions, prefer non-O labels.  When both chunks
+        assign an entity tag the earlier chunk wins (it saw more left
+        context for that span).
+        """
+        merged = ["O"] * total_len
+        for (start, _end), chunk_labels in zip(spans, chunk_labels_list):
+            for j, label in enumerate(chunk_labels):
+                idx = start + j
+                if idx < total_len and merged[idx] == "O":
+                    merged[idx] = label
+        return merged
+
+    # ------------------------------------------------------------------
+    # Predict
+    # ------------------------------------------------------------------
+
     def predict(self, sentences: List[List[str]]) -> List[List[str]]:
         """Predice BIO labels para una lista de oraciones tokenizadas.
+
+        Textos más largos que ``max_chunk_tokens`` se parten
+        automáticamente en chunks solapados para mejorar el recall.
 
         Returns:
             Lista de listas de BIO labels, alineada token a token con `sentences`.
         """
         self.llm.model.eval()
-        all_predictions = []
-        n_batches = (len(sentences) + self.batch_size - 1) // self.batch_size
+        self.last_raw_responses = []
 
-        for i in tqdm(range(0, len(sentences), self.batch_size), total=n_batches, desc="NER inference"):
-            batch = sentences[i : i + self.batch_size]
+        # Flatten: expand each sentence into its chunks
+        flat_tokens: List[List[str]] = []
+        flat_knn: List[Optional[list]] = []
+        sentence_plan: List[List[Tuple[int, int]]] = []  # spans per sentence
 
-            # Construir prompts (con k-NN si aplica)
-            prompts = []
-            knn_examples_batch = []
-            for tokens in batch:
-                knn_examples = None
-                if self.strategy == "knn_few_shot" and self.knn_retriever is not None:
-                    query = " ".join(tokens)
-                    knn_examples = self.knn_retriever.retrieve_examples(query, k=self.knn_k)
-                knn_examples_batch.append(knn_examples)
-                prompts.append(
-                    self.prompt_template.create_prompt(
-                        tokens=tokens, knn_examples=knn_examples
-                    )
-                )
+        for tokens in sentences:
+            spans = self._chunk_sentence(tokens)
+            sentence_plan.append(spans)
+            knn_examples = None
+            if self.strategy == "knn_few_shot" and self.knn_retriever is not None:
+                query = " ".join(tokens)
+                knn_examples = self.knn_retriever.retrieve_examples(query, k=self.knn_k)
+            for start, end in spans:
+                flat_tokens.append(tokens[start:end])
+                flat_knn.append(knn_examples)
 
-            responses = self.llm.batch_generate(
-                prompts=prompts, max_tokens=512
+        # Build prompts
+        prompts = [
+            self.prompt_template.create_prompt(tokens=chunk_toks, knn_examples=knn_ex)
+            for chunk_toks, knn_ex in zip(flat_tokens, flat_knn)
+        ]
+
+        # Generate in batches
+        flat_responses: List[str] = []
+        n_batches = (len(prompts) + self.batch_size - 1) // self.batch_size
+        for i in tqdm(range(0, len(prompts), self.batch_size), total=n_batches, desc="NER inference"):
+            batch_prompts = prompts[i : i + self.batch_size]
+            batch_responses = self.llm.batch_generate(
+                prompts=batch_prompts, max_tokens=512
             )
+            flat_responses.extend(batch_responses)
 
-            for tokens, response in zip(batch, responses):
-                bio_labels = self.prompt_template.parse_response(
-                    response=response, tokens=tokens
+        # Parse responses and re-assemble per sentence
+        resp_idx = 0
+        all_predictions: List[List[str]] = []
+        for tokens, spans in zip(sentences, sentence_plan):
+            chunk_labels_list = []
+            raw_for_sentence = []
+            for start, end in spans:
+                response = flat_responses[resp_idx]
+                raw_for_sentence.append(response)
+                chunk_toks = tokens[start:end]
+                bio = self.prompt_template.parse_response(
+                    response=response, tokens=chunk_toks
+                )
+                chunk_labels_list.append(bio)
+                resp_idx += 1
+
+            self.last_raw_responses.append(raw_for_sentence)
+
+            if len(spans) == 1:
+                bio_labels = chunk_labels_list[0]
+            else:
+                bio_labels = self._merge_chunk_labels(
+                    len(tokens), spans, chunk_labels_list
                 )
 
-                if self.self_verification:
-                    bio_labels = self._verify_entities(tokens, bio_labels)
+            if self.self_verification:
+                bio_labels = self._verify_entities(tokens, bio_labels)
 
-                all_predictions.append(bio_labels)
+            all_predictions.append(bio_labels)
 
         return all_predictions
 
@@ -181,6 +271,7 @@ class LLMNERModel(BaseNERModel):
             f"  strategy='{self.strategy}',\n"
             f"  self_verification={self.self_verification},\n"
             f"  knn_k={self.knn_k},\n"
+            f"  max_chunk_tokens={self.max_chunk_tokens},\n"
             f"  batch_size={self.batch_size}\n"
             f")"
         )
