@@ -58,3 +58,4 @@ huggingface/
 Thumbs.db
 CLAUDE.md
 experiments.log
+fine-tuning/models/
