@@ -151,18 +151,49 @@ class EncoderNERModel(BaseNERModel):
 
         data_collator = DataCollatorForTokenClassification(self.tokenizer)
 
+        import evaluate as hf_evaluate
+        seqeval_metric = hf_evaluate.load("seqeval")
+
+        def compute_metrics_fn(p):
+            import numpy as np
+            predictions, labels = p
+            predictions = np.argmax(predictions, axis=2)
+            true_labels, true_preds = [], []
+            for pred_seq, label_seq in zip(predictions, labels):
+                t_labels, t_preds = [], []
+                for pr, lb in zip(pred_seq, label_seq):
+                    if lb == -100:
+                        continue
+                    t_labels.append(self.id2label.get(int(lb), "O"))
+                    t_preds.append(self.id2label.get(int(pr), "O"))
+                if t_labels:
+                    true_labels.append(t_labels)
+                    true_preds.append(t_preds)
+            if not true_labels:
+                return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "accuracy": 0.0}
+            results = seqeval_metric.compute(predictions=true_preds, references=true_labels)
+            return {
+                "precision": results["overall_precision"],
+                "recall": results["overall_recall"],
+                "f1": results["overall_f1"],
+                "accuracy": results["overall_accuracy"],
+            }
+
         args = TrainingArguments(
             output_dir=output_dir,
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=batch_size,
             learning_rate=learning_rate,
-            weight_decay=weight_decay,
+            weight_decay=0.1,
+            warmup_ratio=0.06,
             eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
+            metric_for_best_model="f1",
+            greater_is_better=True,
             logging_steps=50,
+            save_total_limit=2,
             fp16=torch.cuda.is_available(),
             report_to="none",
         )
@@ -174,6 +205,7 @@ class EncoderNERModel(BaseNERModel):
             eval_dataset=dev_dataset,
             processing_class=self.tokenizer,
             data_collator=data_collator,
+            compute_metrics=compute_metrics_fn,
         )
         trainer.train()
 

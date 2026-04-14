@@ -120,6 +120,8 @@ def compute_multilabel_metrics(
         "report": classification_report(
             y_true, y_pred, target_names=all_labels, digits=digits, zero_division=0
         ),
+        # Exact match
+        "exact_match": float((y_pred == y_true).all(axis=1).mean()),
     }
     return results
 

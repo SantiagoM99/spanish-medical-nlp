@@ -60,9 +60,11 @@ def set_seed(seed: int = 42) -> None:
 
 
 def get_output_dir(model_type: str, model_name: str, peft_method: str = "") -> str:
+    from datetime import datetime
     model_short = model_name.split("/")[-1]
     suffix = f"_{peft_method}" if peft_method else ""
-    return f"results/multilabel/{model_type}{suffix}/{model_short}"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"results/multilabel/{model_type}{suffix}/{model_short}_{timestamp}"
 
 
 def init_wandb(args, dataset: MultiLabelDataset):

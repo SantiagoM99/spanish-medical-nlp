@@ -118,18 +118,34 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
             dev_texts, dev_labels, self.tokenizer, self.label2id, self.max_length
         )
 
+        from scipy.special import expit as sigmoid
+        def compute_metrics_fn(eval_pred):
+            logits, labels = eval_pred
+            labels = (np.asarray(labels) > 0.5).astype(int)
+            probs = sigmoid(logits)
+            preds = (probs >= self.threshold).astype(int)
+            from sklearn.metrics import f1_score
+            return {
+                "f1_micro": f1_score(labels, preds, average="micro", zero_division=0),
+                "f1_macro": f1_score(labels, preds, average="macro", zero_division=0),
+                "exact_match": float((preds == labels).all(axis=1).mean()),
+            }
+
         args = TrainingArguments(
             output_dir=output_dir,
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=batch_size,
             learning_rate=learning_rate,
-            weight_decay=weight_decay,
+            weight_decay=0.1,
+            warmup_ratio=0.06,
             eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
+            metric_for_best_model="f1_micro",
+            greater_is_better=True,
             logging_steps=100,
+            save_total_limit=2,
             fp16=torch.cuda.is_available(),
             report_to="none",
         )
@@ -140,6 +156,7 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
             train_dataset=train_dataset,
             eval_dataset=dev_dataset,
             processing_class=self.tokenizer,
+            compute_metrics=compute_metrics_fn,
         )
         trainer.train()
 
