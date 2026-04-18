@@ -138,6 +138,7 @@ def run_encoder(args, dataset: NERDataset, wandb_run=None) -> None:
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
     )
 
     predictor = NERPredictor(model, dataset)
@@ -182,6 +183,7 @@ def run_decoder(args, dataset: NERDataset, wandb_run=None) -> None:
         knn_k=args.knn_k,
         self_verification=args.self_verification,
         batch_size=args.batch_size,
+        structured_generation=args.structured_generation,
     )
 
     predictor = NERPredictor(model, dataset)
@@ -264,6 +266,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 
     # Quantization
     parser.add_argument("--load_in_4bit", action="store_true")
@@ -290,6 +293,11 @@ def main():
         "--self_verification",
         action="store_true",
         help="Enable self-verification for decoder NER (+2-5%% F1)",
+    )
+    parser.add_argument(
+        "--structured_generation",
+        action="store_true",
+        help="Use Outlines constrained decoding to guarantee valid JSON output",
     )
     parser.add_argument(
         "--knn_k",

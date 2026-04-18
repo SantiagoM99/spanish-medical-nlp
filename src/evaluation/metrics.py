@@ -53,7 +53,78 @@ def compute_ner_metrics(
         "f1": ner_f1(true_labels, pred_labels),
         "report": ner_classification_report(true_labels, pred_labels, digits=digits),
     }
+
+    # Partial-match metrics via nervaluate (SemEval'13 schema)
+    partial = _compute_partial_match_metrics(true_labels, pred_labels)
+    if partial:
+        results["partial_match"] = partial
+
     return results
+
+
+def _bio_to_spans(bio_labels: List[str]) -> List[Dict]:
+    """Convert a BIO label sequence to nervaluate span dicts."""
+    spans = []
+    i = 0
+    while i < len(bio_labels):
+        label = bio_labels[i]
+        if label.startswith("B-"):
+            entity_type = label[2:]
+            start = i
+            end = i
+            j = i + 1
+            while j < len(bio_labels) and bio_labels[j] == f"I-{entity_type}":
+                end = j
+                j += 1
+            spans.append({"label": entity_type, "start": start, "end": end + 1})
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def _compute_partial_match_metrics(
+    true_labels: List[List[str]],
+    pred_labels: List[List[str]],
+) -> Dict:
+    """Compute partial-match NER metrics using nervaluate.
+
+    Returns dict with strict/exact/partial/type F1 scores, or empty dict
+    if nervaluate is not installed.
+    """
+    try:
+        from nervaluate import Evaluator
+    except ImportError:
+        return {}
+
+    # Collect all entity type names
+    all_tags = set()
+    for seq in true_labels:
+        for lbl in seq:
+            if lbl not in ("O", "") and lbl.startswith(("B-", "I-")):
+                all_tags.add(lbl[2:])
+    for seq in pred_labels:
+        for lbl in seq:
+            if lbl not in ("O", "") and lbl.startswith(("B-", "I-")):
+                all_tags.add(lbl[2:])
+    if not all_tags:
+        return {}
+
+    true_spans = [_bio_to_spans(seq) for seq in true_labels]
+    pred_spans = [_bio_to_spans(seq) for seq in pred_labels]
+
+    evaluator = Evaluator(true_spans, pred_spans, tags=sorted(all_tags))
+    results, *_ = evaluator.evaluate()
+
+    return {
+        scenario: {
+            "precision": vals.get("precision", 0.0),
+            "recall": vals.get("recall", 0.0),
+            "f1": vals.get("f1", 0.0),
+        }
+        for scenario, vals in results.items()
+        if scenario in ("strict", "exact", "partial", "ent_type")
+    }
 
 
 def print_ner_report(

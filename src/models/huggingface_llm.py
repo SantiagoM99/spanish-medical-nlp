@@ -1,9 +1,10 @@
 """
 HuggingFace decoder LLM wrapper for zero-shot / few-shot inference.
 Supports quantization (8-bit, 4-bit/QLoRA) via BitsAndBytes.
+Optional structured generation via Outlines (constrained decoding).
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -71,6 +72,72 @@ class HuggingFaceLLM(BaseLLM):
 
         self.model.eval()
         print(f"Model loaded successfully.")
+
+        # Outlines structured generation (lazy init)
+        self._outlines_model = None
+        self._outlines_generators: Dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Structured generation (Outlines)
+    # ------------------------------------------------------------------
+
+    def _get_outlines_model(self):
+        """Lazily create the Outlines model wrapper."""
+        if self._outlines_model is None:
+            import outlines
+            self._outlines_model = outlines.from_transformers(
+                self.model, self.tokenizer
+            )
+        return self._outlines_model
+
+    def _get_outlines_generator(self, json_schema: Union[str, dict]):
+        """Get or create a cached Outlines Generator for a JSON schema."""
+        import json as json_mod
+        import outlines
+
+        schema_key = json_mod.dumps(json_schema, sort_keys=True) if isinstance(json_schema, dict) else json_schema
+        if schema_key not in self._outlines_generators:
+            outlines_model = self._get_outlines_model()
+            output_type = outlines.json_schema(json_schema)
+            self._outlines_generators[schema_key] = outlines.Generator(
+                outlines_model, output_type=output_type
+            )
+        return self._outlines_generators[schema_key]
+
+    def generate_structured(
+        self,
+        prompt: str,
+        json_schema: Union[str, dict],
+        max_tokens: int = 512,
+    ) -> str:
+        """Generate text constrained to a JSON schema using Outlines.
+
+        The prompt is passed RAW — Outlines applies the chat template
+        internally via the wrapped tokenizer.
+
+        Returns:
+            Valid JSON string that conforms to *json_schema*.
+        """
+        generator = self._get_outlines_generator(json_schema)
+        return generator(prompt, max_tokens=max_tokens)
+
+    def batch_generate_structured(
+        self,
+        prompts: List[str],
+        json_schema: Union[str, dict],
+        max_tokens: int = 512,
+    ) -> List[str]:
+        """Generate structured output for multiple prompts (sequential).
+
+        Outlines generators are stateful, so each prompt is processed
+        individually.  The JSON schema compilation is cached.
+        """
+        generator = self._get_outlines_generator(json_schema)
+        return [generator(p, max_tokens=max_tokens) for p in prompts]
+
+    # ------------------------------------------------------------------
+    # Standard generation
+    # ------------------------------------------------------------------
 
     def _format_prompt(self, prompt: str) -> str:
         """Wrap a raw prompt in the model's chat template when available."""

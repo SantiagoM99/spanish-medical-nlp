@@ -220,6 +220,7 @@ class PEFTNERModel(BaseNERModel):
             save_strategy="epoch",
             load_best_model_at_end=True,
             fp16=torch.cuda.is_available(),
+            gradient_checkpointing=True,
             logging_steps=50,
             report_to="none",
             optim="paged_adamw_8bit",

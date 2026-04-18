@@ -50,6 +50,7 @@ class LLMNERModel(BaseNERModel):
         batch_size: int = 4,
         max_chunk_tokens: int = 80,
         chunk_overlap: int = 10,
+        structured_generation: bool = False,
     ):
         super().__init__(model_name=f"{llm.model_name}_ner")
         self.llm = llm
@@ -61,14 +62,33 @@ class LLMNERModel(BaseNERModel):
         self.batch_size = batch_size
         self.max_chunk_tokens = max_chunk_tokens
         self.chunk_overlap = chunk_overlap
+        self.structured_generation = structured_generation
 
         self.prompt_template = prompt_template or NERPromptTemplate(
             entity_types=entity_types,
             strategy=strategy,
         )
 
+        # Build JSON schema for constrained decoding (entity types as enum)
+        self._ner_json_schema = self._build_ner_schema()
+
         # Stores raw LLM responses for the last predict() call (debugging)
         self.last_raw_responses: List[List[str]] = []
+
+    def _build_ner_schema(self) -> dict:
+        """Build a JSON schema that constrains output to valid NER entities."""
+        type_names = self.prompt_template.type_names
+        return {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "entity": {"type": "string"},
+                    "type": {"type": "string", "enum": type_names},
+                },
+                "required": ["entity", "type"],
+            },
+        }
 
     # ------------------------------------------------------------------
     # Chunking helpers
@@ -150,15 +170,29 @@ class LLMNERModel(BaseNERModel):
             for chunk_toks, knn_ex in zip(flat_tokens, flat_knn)
         ]
 
-        # Generate in batches
+        # Generate responses
         flat_responses: List[str] = []
-        n_batches = (len(prompts) + self.batch_size - 1) // self.batch_size
-        for i in tqdm(range(0, len(prompts), self.batch_size), total=n_batches, desc="NER inference"):
-            batch_prompts = prompts[i : i + self.batch_size]
-            batch_responses = self.llm.batch_generate(
-                prompts=batch_prompts, max_tokens=512
-            )
-            flat_responses.extend(batch_responses)
+        use_structured = (
+            self.structured_generation
+            and hasattr(self.llm, "generate_structured")
+        )
+
+        if use_structured:
+            import json as json_mod
+            schema = json_mod.dumps(self._ner_json_schema)
+            for prompt in tqdm(prompts, desc="NER inference (structured)"):
+                resp = self.llm.generate_structured(
+                    prompt=prompt, json_schema=schema, max_tokens=512
+                )
+                flat_responses.append(resp if isinstance(resp, str) else json_mod.dumps(resp, ensure_ascii=False))
+        else:
+            n_batches = (len(prompts) + self.batch_size - 1) // self.batch_size
+            for i in tqdm(range(0, len(prompts), self.batch_size), total=n_batches, desc="NER inference"):
+                batch_prompts = prompts[i : i + self.batch_size]
+                batch_responses = self.llm.batch_generate(
+                    prompts=batch_prompts, max_tokens=512
+                )
+                flat_responses.extend(batch_responses)
 
         # Parse responses and re-assemble per sentence
         resp_idx = 0
@@ -270,6 +304,7 @@ class LLMNERModel(BaseNERModel):
             f"  llm={self.llm.model_name},\n"
             f"  strategy='{self.strategy}',\n"
             f"  self_verification={self.self_verification},\n"
+            f"  structured_generation={self.structured_generation},\n"
             f"  knn_k={self.knn_k},\n"
             f"  max_chunk_tokens={self.max_chunk_tokens},\n"
             f"  batch_size={self.batch_size}\n"

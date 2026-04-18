@@ -104,11 +104,18 @@ class NERPredictor:
             "recall": metrics["recall"],
             "f1": metrics["f1"],
         }
+        if "partial_match" in metrics:
+            summary["partial_match"] = metrics["partial_match"]
         with open(metrics_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
         print(f"Predictions saved to: {output_dir}")
         print(metrics["report"])
-        print(f"F1: {metrics['f1']:.4f}")
+        print(f"F1 (strict): {metrics['f1']:.4f}")
+
+        if "partial_match" in metrics:
+            pm = metrics["partial_match"]
+            print(f"F1 (partial):  {pm.get('partial', {}).get('f1', 0):.4f}  "
+                  f"F1 (ent_type): {pm.get('ent_type', {}).get('f1', 0):.4f}")
 
         return metrics

@@ -109,6 +109,7 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
         batch_size: int = 16,
         learning_rate: float = 2e-5,
         weight_decay: float = 0.01,
+        gradient_accumulation_steps: int = 1,
     ) -> None:
         """Fine-tune the encoder on training data."""
         train_dataset = MultiLabelTextDataset(
@@ -136,6 +137,7 @@ class EncoderMultiLabelModel(BaseMultiLabelModel):
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
             learning_rate=learning_rate,
             weight_decay=0.1,
             warmup_ratio=0.06,
